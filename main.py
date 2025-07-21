@@ -74,102 +74,72 @@ def search_sparse(query, top_k=5):
 def combine_and_rerank(sparse_results, dense_results, query, rerank_top_n=5):
     # Combine by unique id (primary_key or content), keep best score from either
     combined = {}
-    j = 0
+    #print("sparse_results: ", sparse_results, flush=True)
+    #print("dense_results: ", dense_results, flush=True)
     for r in sparse_results + dense_results:
-        if j == 0:
-            print("r: ", r, flush=True)
-        j += 1
         entity = r.get('entity', {})
         content = entity.get('content')
         if isinstance(content, list) and content:
             content = content[0]
-        print("content: ", content, flush=True)
         if not content:
             continue  # skip if content is missing or empty
-        unique_id = r.get('primary_key') #or content
-        score = r.get('distance', float('inf'))        
-        #cur_score = combined[unique_id][0]
-        cur_score = (combined or {}).get(unique_id, [float('inf')])[0] or float('inf')  # handles the case where it was None
-        print("cur_score: ", cur_score, flush=True)
+        unique_id = r.get('primary_key')
+        score = r.get('distance', float('inf'))
+        cur_score = (combined or {}).get(unique_id, [float('inf')])[0] or float('inf')
+        #print("cur_score: ", cur_score, flush=True)
+        #print("score: ", score, flush=True)
         if cur_score is None:
             cur_score = float('inf')
         if score < cur_score:
-            combined[unique_id] = [score, content]
-    #candidates = list(combined.values())
-    print("combined: ", combined, flush=True)
-    max_candidates = 20
-    #candidates = sorted(combined.items(), key=lambda kv: kv[1][0])[:max_candidates]
-    print("type(combined): ", type(combined), flush=True)
-    candidates = combined
-    print("len(sparse_results): ", len(sparse_results), flush=True)
-    print("len(dense_results): ", len(dense_results), flush=True)
-    #print("candidates: ", candidates, flush=True)
-    # Limit the number of candidates for reranking
-    
-    #candidates = candidates[:max_candidates]
-    #print("type(candidates): ", type(candidates), flush=True)
-    #print("type(candidates[0]): ", type(candidates[0]), flush=True)
-    #print("type(candidates[0][0]): ", type(candidates[0][0]), flush=True)
-    #print("type(candidates[0][1]): ", type(candidates[0][1]), flush=True)    # Rerank with OpenAI (use text-davinci-003 or gpt-3.5-turbo)
+            combined[unique_id] = [score, r]
+    # Build pk_to_hit mapping
+    pk_to_hit = {pk: hit for pk, (score, hit) in combined.items()}
+    # Prepare rerank prompt
     prompt = f"""
 Given the query: '{query}', rank the following passages by relevance. Return the top {rerank_top_n} as a JSON list of objects with 'primary_key' and 'content'.
 
 """
+    print("combined: ", combined, flush=True)
     i = 0
-    for (key, value) in candidates.items():
-        #snippet = c['entity'].get('content', '')
-        #print("c: ", c)
-        #key = c[0]
-        #print("key: ", key)
-        #print(len(candidates[key]))
-        snippet = value[1]
+    for (key, value) in combined.items():
+        snippet = value[1].get('entity', {}).get('content')
         if isinstance(snippet, list):
             snippet = snippet[0] if snippet else ''
         snippet = snippet[:300]  # Truncate to 300 chars
-        #print("snippet: ", snippet)
         prompt += f"[{i+1}] (primary_key: {key}) {snippet}\n"
         i += 1
-        
-    prompt += f"\nPick the 5 most relevant results (by number) and return them as a Python list of numbers."
+    prompt += f"\nPick the {rerank_top_n} most relevant results (by number) and return them as a Python list of numbers."
     client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )
-    
-    #print("response: ", response)
     import json
     import re
-    # Extract JSON from response
     match = re.search(r'\[.*\]', response.choices[0].message.content, re.DOTALL)
     if match:
         reranked = json.loads(match.group(0))
     else:
         reranked = []
-    # Attach scores if possible
-
-    print("reranked: ", reranked, flush=True)
-
-    def get_unique_id(entity):
-        pk = entity.get('primary_key')
-        content = entity.get('content')
-        if isinstance(content, list) and content:
-            content = content[0]
-        return pk or content
-
-    #id2score = {get_unique_id(c['entity']): c.get('score', 0) for c in candidates}
-    #print("id2score: ", id2score)
+    # Build results with only content and metadata
     results = []
-    i = 0
     for doc in reranked:
-        pk = doc.get('primary_key') #or doc.get('content')
-        #if i == 0:
-        #    print("candidates.get(pk): ", candidates.get(pk))
-        #    print("type(candidates.get(pk)): ", type(candidates.get(pk)))
-        #    print("candidates.get(pk)[1]: ", candidates.get(pk)[1])
-        #i += 1
-        results.append(candidates)
+        pk = doc.get('primary_key')
+        hit = pk_to_hit.get(pk)
+        if not hit:
+            continue
+        entity = hit.get('entity', {})
+        content = entity.get('content')
+        if isinstance(content, list):
+            content = content[0] if content else ""
+        metadata = entity.get('metadata')
+        if isinstance(metadata, list):
+            metadata = metadata[0] if metadata else ""
+        results.append({
+            "content": content,
+            "metadata": metadata
+        })
     return results[:rerank_top_n]
 
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -268,11 +238,14 @@ def search(query: str, top_k: int = 5):
     try:
         print("Received /search request with query:", query, flush=True)
         print("Starting dense search", flush=True)
-        dense_results = search_dense(query, top_k)
+        #dense_results = search_dense(query, top_k)
+        dense_results = list(search_dense(query, top_k))
         #print("dense_results: ", dense_results, flush=True)
         print("Dense search complete", flush=True)
         print("Starting sparse search", flush=True)
-        sparse_results = search_sparse(query, top_k)
+        #sparse_results = search_sparse(query, top_k)
+        sparse_results = list(search_sparse(query, top_k))
+
         #print("sparse_results: ", sparse_results, flush=True)
         print("Sparse search complete", flush=True)
         print("Combining and reranking results", flush=True)
