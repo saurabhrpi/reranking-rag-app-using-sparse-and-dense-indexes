@@ -1,0 +1,4 @@
+gitpython
+scikit-learn
+pymilvus
+tqdm 
