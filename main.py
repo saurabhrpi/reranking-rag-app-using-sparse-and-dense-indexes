@@ -52,8 +52,8 @@ def search_dense(query, top_k=5):
     )
     #print("len(dense results): ", len(results))
     #print("dense results: ", results)
-    print("type(results): ", type(results))
-    print("type(results[0]): ", type(results[0]))
+    #print("type(results): ", type(results))
+    #print("type(results[0]): ", type(results[0]))
     return results[0]
 
 def search_sparse(query, top_k=5):
@@ -111,17 +111,38 @@ Given the query: '{query}', rank the following passages by relevance. Return the
     prompt += f"\nPick the {rerank_top_n} most relevant results (by number) and return them as a Python list of numbers."
     client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
+        model="gpt-4",
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )
+
+    #print("response from openai: ", response.choices[0].message.content, flush=True)
+
     import json
     import re
-    match = re.search(r'\[.*\]', response.choices[0].message.content, re.DOTALL)
+    # Use non-greedy regex to extract the first JSON list
+    match = re.search(r'\[.*?\]', response.choices[0].message.content, re.DOTALL)
     if match:
-        reranked = json.loads(match.group(0))
+        try:
+            reranked = json.loads(match.group(0))
+            # Robust type/structure check
+            if not isinstance(reranked, list):
+                print("Warning: LLM did not return a list. Got:", reranked, flush=True)
+                reranked = []
+            elif reranked and isinstance(reranked[0], int):
+                print("Warning: LLM returned a list of ints, not objects. Got:", reranked, flush=True)
+                reranked = []
+            elif reranked and not isinstance(reranked[0], dict):
+                print("Warning: LLM returned a list of non-dicts. Got:", reranked, flush=True)
+                reranked = []
+        except Exception as e:
+            print("JSON decode error:", e, "Match was:", match.group(0), flush=True)
+            reranked = []
     else:
         reranked = []
+    
+    print("reranked: ", reranked, flush=True)
+
     # Build results with only content and metadata
     results = []
     for doc in reranked:
