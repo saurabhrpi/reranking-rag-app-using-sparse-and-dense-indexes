@@ -13,7 +13,7 @@ MILVUS_TOKEN = os.getenv("MILVUS_TOKEN", "268c3796886a41827afcee6560f083fbfc4992
 MILVUS_COLLECTION_SPARSE = os.getenv("MILVUS_COLLECTION_SPARSE", "githubSparseVectorRag")
 MILVUS_COLLECTION_DENSE = os.getenv("MILVUS_COLLECTION_DENSE", "githubDenseVectorRag")
 
- 
+
 # Milvus client setup (assume you have this)
 from pymilvus import MilvusClient
 milvus_client = MilvusClient(
@@ -97,9 +97,7 @@ def combine_and_rerank(sparse_results, dense_results, query, rerank_top_n=5):
     # Prepare rerank prompt
     prompt = f"""
 Given the query: '{query}', rank the following passages by relevance. Return the top {rerank_top_n} as a JSON list of objects with 'primary_key' and 'content'.
-
 """
-    print("combined: ", combined, flush=True)
     i = 0
     for (key, value) in combined.items():
         snippet = value[1].get('entity', {}).get('content')
@@ -108,7 +106,11 @@ Given the query: '{query}', rank the following passages by relevance. Return the
         snippet = snippet[:300]  # Truncate to 300 chars
         prompt += f"[{i+1}] (primary_key: {key}) {snippet}\n"
         i += 1
-    prompt += f"\nPick the {rerank_top_n} most relevant results (by number) and return them as a Python list of numbers."
+    prompt += (
+        f"\nPick the {rerank_top_n} most relevant results. "
+        "For each, return an object with the fields 'primary_key' (copied exactly from above) and 'content' (copied exactly from above). "
+        "Return a JSON list of these objects. Do not return a list of numbers or any other format."
+    )
     client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     response = client.chat.completions.create(
         model="gpt-4",
@@ -123,21 +125,98 @@ Given the query: '{query}', rank the following passages by relevance. Return the
     # Use non-greedy regex to extract the first JSON list
     match = re.search(r'\[.*?\]', response.choices[0].message.content, re.DOTALL)
     if match:
+        json_str = match.group(0)
         try:
-            reranked = json.loads(match.group(0))
+            reranked = json.loads(json_str)
             # Robust type/structure check
             if not isinstance(reranked, list):
                 print("Warning: LLM did not return a list. Got:", reranked, flush=True)
                 reranked = []
             elif reranked and isinstance(reranked[0], int):
-                print("Warning: LLM returned a list of ints, not objects. Got:", reranked, flush=True)
-                reranked = []
+                print("Warning: LLM returned a list of ints, mapping to candidates. Got:", reranked, flush=True)
+                # Map indices to candidates
+                candidates_list = list(combined.values())
+                mapped_results = []
+                for idx in reranked:
+                    if 1 <= idx <= len(candidates_list):
+                        score, hit = candidates_list[idx - 1]
+                        entity = hit.get('entity', {})
+                        content = entity.get('content')
+                        if isinstance(content, list):
+                            content = content[0] if content else ""
+                        metadata = entity.get('metadata')
+                        if isinstance(metadata, list):
+                            metadata = metadata[0] if metadata else ""
+                        mapped_results.append({
+                            "primary_key": hit.get('primary_key'),
+                            "content": content,
+                            "metadata": metadata
+                        })
+                reranked = mapped_results
             elif reranked and not isinstance(reranked[0], dict):
                 print("Warning: LLM returned a list of non-dicts. Got:", reranked, flush=True)
                 reranked = []
         except Exception as e:
-            print("JSON decode error:", e, "Match was:", match.group(0), flush=True)
-            reranked = []
+            print("JSON decode error:", e, "Match was:", json_str, flush=True)
+            # Try to recover by truncating to the last closing bracket
+            last_bracket = json_str.rfind(']')
+            if last_bracket != -1:
+                try:
+                    reranked = json.loads(json_str[:last_bracket+1])
+                except Exception as e2:
+                    print("JSON decode error after truncation:", e2, "Match was:", json_str[:last_bracket+1], flush=True)
+                    # Try to salvage valid objects
+                    objects = re.findall(r'\{.*?\}', json_str[:last_bracket+1], re.DOTALL)
+                    reranked = []
+                    for obj_str in objects:
+                        try:
+                            obj = json.loads(obj_str)
+                            reranked.append(obj)
+                        except Exception as e3:
+                            print("Skipping invalid object:", e3, "Object was:", obj_str, flush=True)
+                    
+                    # Also try to extract partial objects from any remaining content
+                    print("Extracting partial objects as well...", flush=True)
+                    # Find all opening braces and try to extract partial content
+                    brace_positions = [m.start() for m in re.finditer(r'\{', json_str[:last_bracket+1])]
+                    for start_pos in brace_positions:
+                        try:
+                            # Try to find the last complete field before truncation
+                            partial_str = json_str[start_pos:]
+                            # Look for the last complete field (ends with comma or closing brace)
+                            last_comma = partial_str.rfind(',')
+                            last_quote = partial_str.rfind('"')
+                            if last_comma > last_quote and last_comma > 0:
+                                # Object ends with a comma, try to parse up to that point
+                                partial_obj = partial_str[:last_comma] + "}"
+                                obj = json.loads(partial_obj)
+                                # Check if this object is not already in reranked (avoid duplicates)
+                                if not any(r.get('primary_key') == obj.get('primary_key') for r in reranked):
+                                    reranked.append(obj)
+                                    print("Successfully extracted partial object", flush=True)
+                            elif partial_str.endswith('}'):
+                                # Complete object
+                                obj = json.loads(partial_str)
+                                # Check if this object is not already in reranked (avoid duplicates)
+                                if not any(r.get('primary_key') == obj.get('primary_key') for r in reranked):
+                                    reranked.append(obj)
+                                    print("Successfully extracted complete object", flush=True)
+                        except Exception as e4:
+                            print("Failed to extract partial object from position", start_pos, ":", e4, flush=True)
+                            continue
+                    if not reranked:
+                        print("No valid JSON objects found, attempting manual field extraction...", flush=True)
+                        pk_match = re.search(r'"primary_key"\s*:\s*(\d+)', json_str)
+                        content_match = re.search(r'"content"\s*:\s*"([^"]*)', json_str)
+                        if pk_match and content_match:
+                            reranked.append({
+                                "primary_key": int(pk_match.group(1)),
+                                "content": content_match.group(1),
+                                "metadata": ""
+                            })
+                            print("Manually extracted partial object with primary_key and content.", flush=True)                      
+            else:
+                reranked = []
     else:
         reranked = []
     
