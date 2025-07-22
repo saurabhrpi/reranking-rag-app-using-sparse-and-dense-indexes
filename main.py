@@ -4,7 +4,6 @@ from fastapi.responses import HTMLResponse, JSONResponse
 import openai
 import os
 from pydantic import BaseModel
-from typing import List
 
 app = FastAPI()
 
@@ -22,20 +21,6 @@ milvus_client = MilvusClient(
 )
 COLLECTION_DENSE = os.getenv("MILVUS_COLLECTION_DENSE", "githubDenseVectorRag")
 COLLECTION_SPARSE = os.getenv("MILVUS_COLLECTION_SPARSE", "githubSparseVectorRag")
-
-# --- Models ---
-class QueryRequest(BaseModel):
-    query: str
-    top_k: int = 10
-    rerank_top_n: int = 5
-
-class SearchResult(BaseModel):
-    id: str
-    score: float
-    text: str
-
-class RerankResponse(BaseModel):
-    results: List[SearchResult]
 
 # --- Helper Functions ---
 def search_dense(query, top_k=5):
@@ -279,14 +264,6 @@ def fit_vectorizer_from_milvus(collection_name, field="content"):
 
 # Only fit the vectorizer from Milvus at startup
 vectorizer = fit_vectorizer_from_milvus(COLLECTION_SPARSE)
-
-# --- API Endpoint ---
-@app.post("/query", response_model=RerankResponse)
-def query_endpoint(req: QueryRequest):
-    sparse_results = search_sparse(req.query, req.top_k)
-    dense_results = search_dense(req.query, req.top_k)
-    reranked = combine_and_rerank(sparse_results, dense_results, req.query, req.rerank_top_n)
-    return {"results": reranked} 
 
 @app.get("/", response_class=HTMLResponse)
 def home():
