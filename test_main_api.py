@@ -49,25 +49,73 @@ async def test_no_api_key_leakage():
         assert "milvus" not in str(data).lower()
         assert "token" not in str(data).lower()
 
+@pytest.mark.parametrize("query", [
+    "private_repo_secret_function",
+    "secret_api_key_12345",
+    "internal_confidential_data",
+    "password_hash_function",
+])
 @pytest.mark.asyncio
-async def test_private_repo_search_returns_not_found():
+async def test_private_repo_search_returns_not_found(query):
+    """Test that searches for private/sensitive content return no results"""
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as ac:
-        response = await ac.get("/search", params={"query": "private_repo_secret_function", "top_k": 3})
+        response = await ac.get("/search", params={"query": query, "top_k": 3})
         data = response.json()
-        assert not data["results"] or "not found" in str(data).lower()
+        # Should return no results for private/sensitive content
+        assert not data["results"], f"Expected no results for query '{query}', got {len(data['results'])} results"
+
+@pytest.mark.parametrize("query, expected_status", [
+    ("A" * 100_000, 413),  # oversize
+    ("", 400),             # empty → bad request
+    ("   ", 400),          # whitespace only → bad request
+])
+@pytest.mark.asyncio
+async def test_search_validates_query_length(query, expected_status):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as ac:
+        r = await ac.get("/search", params={"query": query, "top_k": 3})
+        assert r.status_code == expected_status
+
+@pytest.mark.parametrize("top_k, expected_status", [
+    (0, 400),      # zero → bad request
+    (-1, 400),     # negative → bad request
+    (101, 400),    # too large → bad request
+    ("five", 400), # string → bad request
+])
+@pytest.mark.asyncio
+async def test_search_validates_top_k(top_k, expected_status):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as ac:
+        r = await ac.get("/search", params={"query": "test query", "top_k": top_k})
+        assert r.status_code == expected_status
 
 @pytest.mark.asyncio
-async def test_payload_too_large_or_rate_limit():
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as ac:
-        big_query = "A" * 100_000
-        response = await ac.get("/search", params={"query": big_query, "top_k": 3})
-        assert response.status_code in (400, 413, 429)
+async def test_rate_limit():
+    """Test rate limiting by making many requests quickly"""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as ac:
+        # Make many requests quickly to trigger rate limit
+        responses = []
+        for _ in range(150):  # More than the rate limit
+            r = await ac.get("/search", params={"query": "test", "top_k": 1})
+            responses.append(r.status_code)
+        
+        # Should have some 429 responses
+        assert 429 in responses, f"Expected 429 in responses, got: {set(responses)}"
 
 @pytest.mark.asyncio
 async def test_schema_mismatch_returns_4xx():
+    """Test that FastAPI properly validates parameter types"""
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as ac:
+        # This should trigger FastAPI's automatic validation
         response = await ac.get("/search", params={"query": 123, "top_k": "five"})  # Invalid types
-        assert 400 <= response.status_code < 500
+        assert response.status_code == 422  # FastAPI's default for validation errors
 
 @pytest.mark.asyncio
 async def test_llm_infinite_loop_protection(monkeypatch):
