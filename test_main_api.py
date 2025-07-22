@@ -34,9 +34,9 @@ async def test_best_practices_mixing_python_c():
 @pytest.mark.asyncio
 async def test_cython_vs_cpython():
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as ac:
-        response = await ac.post("/query", json={"query": "What problems does Cython solve compared to CPython", "top_k": 5, "rerank_top_n": 3})
+        response = await ac.post("/query", json={"query": "How does Cython's GIL management work under the hood", "top_k": 5, "rerank_top_n": 3})
         data = response.json()
-        assert any(any(word in (r["content"] or "") for word in ["Cython", "CPython", "performance"]) for r in data["results"])
+        assert any(any(word in (r["content"] or "") for word in ["GIL", "threading", "lock", "release", "nogil", "gil", "thread"]) for r in data["results"])
 
 @pytest.mark.asyncio
 async def test_no_api_key_leakage():
