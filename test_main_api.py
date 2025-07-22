@@ -58,11 +58,11 @@ async def test_private_repo_search_returns_not_found():
 
 
 @pytest.mark.asyncio
-async def test_payload_too_large_or_rate_limit():
+async def test_payload_too_large():
+    big_query = "A" * 100_000
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as ac:
-        big_query = "A" * 100_000
-        response = await ac.get("/search", params={"query": big_query, "top_k": 3})
-        assert response.status_code in (400, 413, 429)
+        response = await ac.post("/search", json={"query": big_query, "top_k": 3})
+        assert response.status_code == 413
 
 @pytest.mark.asyncio
 async def test_schema_mismatch_returns_4xx():
