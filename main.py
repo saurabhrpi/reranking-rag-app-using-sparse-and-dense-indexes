@@ -1,11 +1,12 @@
 import pickle
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 import openai
 import os
 from pydantic import BaseModel
 import time
 from collections import defaultdict
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 app = FastAPI()
 
@@ -363,34 +364,17 @@ def home():
 @app.get("/search")
 def search(query: str, top_k: int = 5, request: Request = None):
     try:
-        # Rate limiting
-        client_ip = request.client.host if request and request.client else "default"
-        if not check_rate_limit(client_ip):
-            return JSONResponse(
-                status_code=429,
-                content={"error": "Rate limit exceeded. Please try again later."}
-            )
-        
         # Input validation
         if not query or not isinstance(query, str):
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Query must be a non-empty string"}
-            )
+            raise HTTPException(status_code=400, detail="Query must be a non-empty string")
         
         # Check query length (reasonable limit for search queries)
         if len(query) > 10000:  # 10KB limit
-            return JSONResponse(
-                status_code=413,
-                content={"error": "Query too large. Maximum length is 10,000 characters."}
-            )
+            raise HTTPException(status_code=413, detail="Query too large. Maximum length is 10,000 characters.")
         
         # Validate top_k parameter
         if not isinstance(top_k, int) or top_k <= 0 or top_k > 100:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "top_k must be a positive integer between 1 and 100"}
-            )
+            raise HTTPException(status_code=400, detail="top_k must be a positive integer between 1 and 100")
         
         print("Received /search request with query:", query, flush=True)
         print("Starting dense search", flush=True)
@@ -409,9 +393,8 @@ def search(query: str, top_k: int = 5, request: Request = None):
         import json as _json
         print("Returning to UI:", _json.dumps({"results": reranked_results}, indent=2), flush=True)
         return {"results": reranked_results}
+    except HTTPException:
+        raise
     except Exception as e:
         print("Exception in /search:", e, flush=True)
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Internal server error"}
-        ) 
+        raise HTTPException(status_code=500, detail="Internal server error") 
