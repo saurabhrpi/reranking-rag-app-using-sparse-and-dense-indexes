@@ -4,8 +4,30 @@ from fastapi.responses import HTMLResponse, JSONResponse
 import openai
 import os
 from pydantic import BaseModel
+import time
+from collections import defaultdict
 
 app = FastAPI()
+
+# Simple rate limiter
+request_counts = defaultdict(list)
+RATE_LIMIT_WINDOW = 60  # 1 minute
+RATE_LIMIT_MAX_REQUESTS = 100  # max requests per minute
+
+def check_rate_limit(client_ip: str = "default"):
+    """Simple rate limiter - returns True if request should be allowed"""
+    current_time = time.time()
+    # Clean old requests outside the window
+    request_counts[client_ip] = [req_time for req_time in request_counts[client_ip] 
+                                if current_time - req_time < RATE_LIMIT_WINDOW]
+    
+    # Check if we're under the limit
+    if len(request_counts[client_ip]) >= RATE_LIMIT_MAX_REQUESTS:
+        return False
+    
+    # Add current request
+    request_counts[client_ip].append(current_time)
+    return True
 
 MILVUS_HOST = os.getenv("MILVUS_HOST", "in03-874be76b9aa0be7.serverless.gcp-us-west1.cloud.zilliz.com")
 MILVUS_TOKEN = os.getenv("MILVUS_TOKEN", "268c3796886a41827afcee6560f083fbfc4992ae7265598b4d3582979748054380929293cd76ea79244845abf9773e4e9128de0e")
@@ -81,7 +103,17 @@ def combine_and_rerank(sparse_results, dense_results, query, rerank_top_n=5):
     pk_to_hit = {pk: hit for pk, (score, hit) in combined.items()}
     # Prepare rerank prompt
     prompt = f"""
-Given the query: '{query}', rank the following passages by relevance. Return the top {rerank_top_n} as a JSON list of objects with 'primary_key' and 'content'.
+Given the query: '{query}', analyze the following passages for relevance.
+
+IMPORTANT: If NONE of the passages actually answer the query or contain relevant information, return an empty list []. This includes cases where:
+- The query asks for specific functions, classes, or features that don't exist in the codebase
+- The query asks for private repository content or secrets
+- The query asks for content that's not present in the indexed documentation
+- The passages are completely unrelated to the query
+
+Only return results if they genuinely contain information that answers the query.
+
+Passages to analyze:
 """
     i = 0
     for (key, value) in combined.items():
@@ -92,8 +124,9 @@ Given the query: '{query}', rank the following passages by relevance. Return the
         prompt += f"[{i+1}] (primary_key: {key}) {snippet}\n"
         i += 1
     prompt += (
-        f"\nPick the {rerank_top_n} most relevant results. "
-        "For each, return an object with the fields 'primary_key' (copied exactly from above) and 'content' (copied exactly from above). "
+        f"\nIf any passages are relevant, pick the top {rerank_top_n} most relevant results. "
+        "For each relevant result, return an object with the fields 'primary_key' (copied exactly from above) and 'content' (copied exactly from above). "
+        "If NO passages are relevant to the query, return an empty list []. "
         "Return a JSON list of these objects. Do not return a list of numbers or any other format."
     )
     client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -225,6 +258,23 @@ Given the query: '{query}', rank the following passages by relevance. Return the
             "content": content,
             "metadata": metadata
         })
+    
+    # Additional confidence check: if results seem irrelevant to the query, filter them out
+    if results and len(results) > 0:
+        # Check if the query contains terms that suggest it's looking for non-existent content
+        query_lower = query.lower()
+        suspicious_terms = ['private', 'secret', 'internal', 'confidential', 'api_key', 'token', 'password']
+        if any(term in query_lower for term in suspicious_terms):
+            # Double-check relevance with a simple keyword match
+            relevant_results = []
+            for result in results:
+                content_lower = result.get('content', '').lower()
+                # If the content doesn't contain any words from the query (excluding common words), it's likely irrelevant
+                query_words = [word for word in query_lower.split() if len(word) > 3 and word not in ['what', 'how', 'when', 'where', 'with', 'from', 'this', 'that', 'they', 'have', 'been', 'will', 'your', 'repo', 'function']]
+                if any(word in content_lower for word in query_words):
+                    relevant_results.append(result)
+            results = relevant_results
+    
     return results[:rerank_top_n]
 
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -311,8 +361,37 @@ def home():
     """
 
 @app.get("/search")
-def search(query: str, top_k: int = 5):
+def search(query: str, top_k: int = 5, request: Request = None):
     try:
+        # Rate limiting
+        client_ip = request.client.host if request and request.client else "default"
+        if not check_rate_limit(client_ip):
+            return JSONResponse(
+                status_code=429,
+                content={"error": "Rate limit exceeded. Please try again later."}
+            )
+        
+        # Input validation
+        if not query or not isinstance(query, str):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Query must be a non-empty string"}
+            )
+        
+        # Check query length (reasonable limit for search queries)
+        if len(query) > 10000:  # 10KB limit
+            return JSONResponse(
+                status_code=413,
+                content={"error": "Query too large. Maximum length is 10,000 characters."}
+            )
+        
+        # Validate top_k parameter
+        if not isinstance(top_k, int) or top_k <= 0 or top_k > 100:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "top_k must be a positive integer between 1 and 100"}
+            )
+        
         print("Received /search request with query:", query, flush=True)
         print("Starting dense search", flush=True)
         #dense_results = search_dense(query, top_k)
@@ -322,7 +401,6 @@ def search(query: str, top_k: int = 5):
         print("Starting sparse search", flush=True)
         #sparse_results = search_sparse(query, top_k)
         sparse_results = list(search_sparse(query, top_k))
-
         #print("sparse_results: ", sparse_results, flush=True)
         print("Sparse search complete", flush=True)
         print("Combining and reranking results", flush=True)
@@ -333,4 +411,7 @@ def search(query: str, top_k: int = 5):
         return {"results": reranked_results}
     except Exception as e:
         print("Exception in /search:", e, flush=True)
-        return {"error": str(e)} 
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Internal server error"}
+        ) 
