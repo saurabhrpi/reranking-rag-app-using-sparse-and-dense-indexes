@@ -2,3 +2,4 @@ gitpython
 scikit-learn
 pymilvus
 tqdm 
+fastapi
