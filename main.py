@@ -1,5 +1,5 @@
 import pickle
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Body
 from fastapi.responses import HTMLResponse, JSONResponse
 import openai
 import os
@@ -361,48 +361,55 @@ def home():
     </html>
     """
 
+def search_core(query, top_k):
+    # Input validation
+    if not query or not isinstance(query, str):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Query must be a non-empty string"}
+        )
+    if len(query) > 10000:  # 10KB limit
+        return JSONResponse(
+            status_code=413,
+            content={"error": "Query too large. Maximum length is 10,000 characters."}
+        )
+    if not isinstance(top_k, int) or top_k <= 0 or top_k > 100:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "top_k must be a positive integer between 1 and 100"}
+        )
+    print("Received /search request with query:", query, flush=True)
+    print("Starting dense search", flush=True)
+    dense_results = list(search_dense(query, top_k))
+    print("Dense search complete", flush=True)
+    print("Starting sparse search", flush=True)
+    sparse_results = list(search_sparse(query, top_k))
+    print("Sparse search complete", flush=True)
+    print("Combining and reranking results", flush=True)
+    reranked_results = combine_and_rerank(sparse_results, dense_results, query, rerank_top_n=5)
+    print(f"Returning {len(reranked_results)} reranked results", flush=True)
+    import json as _json
+    print("Returning to UI:", _json.dumps({"results": reranked_results}, indent=2), flush=True)
+    return {"results": reranked_results}
+
 @app.get("/search")
 def search(query: str, top_k: int = 5, request: Request = None):
     try:
-        # Input validation
-        if not query or not isinstance(query, str):
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Query must be a non-empty string"}
-            )        
-        # Check query length (reasonable limit for search queries)
-        if len(query) > 10000:  # 10KB limit
-            return JSONResponse(
-                status_code=413,
-                content={"error": "Query too large. Maximum length is 10,000 characters."}
-            )
-        
-        # Validate top_k parameter
-        if not isinstance(top_k, int) or top_k <= 0 or top_k > 100:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "top_k must be a positive integer between 1 and 100"}
-            )
-        
-        print("Received /search request with query:", query, flush=True)
-        print("Starting dense search", flush=True)
-        #dense_results = search_dense(query, top_k)
-        dense_results = list(search_dense(query, top_k))
-        #print("dense_results: ", dense_results, flush=True)
-        print("Dense search complete", flush=True)
-        print("Starting sparse search", flush=True)
-        #sparse_results = search_sparse(query, top_k)
-        sparse_results = list(search_sparse(query, top_k))
-        #print("sparse_results: ", sparse_results, flush=True)
-        print("Sparse search complete", flush=True)
-        print("Combining and reranking results", flush=True)
-        reranked_results = combine_and_rerank(sparse_results, dense_results, query, rerank_top_n=5)
-        print(f"Returning {len(reranked_results)} reranked results", flush=True)
-        import json as _json
-        print("Returning to UI:", _json.dumps({"results": reranked_results}, indent=2), flush=True)
-        return {"results": reranked_results}
+        return search_core(query, top_k)
     except HTTPException:
         raise
     except Exception as e:
         print("Exception in /search:", e, flush=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.post("/search")
+def search_post(payload: dict = Body(...)):
+    query = payload.get("query")
+    top_k = payload.get("top_k", 5)
+    try:
+        return search_core(query, top_k)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("Exception in /search (POST):", e, flush=True)
         raise HTTPException(status_code=500, detail="Internal server error") 
