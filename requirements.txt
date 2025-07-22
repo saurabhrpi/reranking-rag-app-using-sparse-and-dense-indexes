@@ -4,3 +4,4 @@ pymilvus
 tqdm 
 fastapi
 openai
+pytest-asyncio
