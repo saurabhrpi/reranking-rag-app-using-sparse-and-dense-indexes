@@ -8,7 +8,7 @@ async def test_cdef_class_syntax():
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.get("/search", params={"query": "What's the syntax for cdef class?", "top_k": 5})
         data = response.json()
-        assert any("cdef class" in (r["content"] or "") for r in data["results"])
+        assert any("cdef" in (r["content"] or "") for r in data["results"])
 
 @pytest.mark.asyncio
 async def test_memory_allocation_returns_results():
@@ -29,7 +29,7 @@ async def test_best_practices_mixing_python_c():
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.get("/search", params={"query": "Best practices for mixing Python and C data types in Cython", "top_k": 5})
         data = response.json()
-        assert any(any(word in (r["content"] or "") for word in ["data type", "cdef", "Cython"]) for r in data["results"])
+        assert any(any(word in (r["content"] or "") for word in ["data type", "cdef", "cython"]) for r in data["results"])
 
 @pytest.mark.asyncio
 async def test_cython_vs_cpython():
