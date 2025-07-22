@@ -366,15 +366,23 @@ def search(query: str, top_k: int = 5, request: Request = None):
     try:
         # Input validation
         if not query or not isinstance(query, str):
-            raise HTTPException(status_code=400, detail="Query must be a non-empty string")
-        
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Query must be a non-empty string"}
+            )        
         # Check query length (reasonable limit for search queries)
         if len(query) > 10000:  # 10KB limit
-            raise HTTPException(status_code=413, detail="Query too large. Maximum length is 10,000 characters.")
+            return JSONResponse(
+                status_code=413,
+                content={"error": "Query too large. Maximum length is 10,000 characters."}
+            )
         
         # Validate top_k parameter
         if not isinstance(top_k, int) or top_k <= 0 or top_k > 100:
-            raise HTTPException(status_code=400, detail="top_k must be a positive integer between 1 and 100")
+            return JSONResponse(
+                status_code=400,
+                content={"error": "top_k must be a positive integer between 1 and 100"}
+            )
         
         print("Received /search request with query:", query, flush=True)
         print("Starting dense search", flush=True)
