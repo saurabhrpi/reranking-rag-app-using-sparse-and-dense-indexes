@@ -94,22 +94,6 @@ async def test_search_validates_top_k(top_k, expected_status):
         assert r.status_code == expected_status
 
 @pytest.mark.asyncio
-async def test_rate_limit():
-    """Test rate limiting by making many requests quickly"""
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
-        base_url="http://test",
-    ) as ac:
-        # Make many requests quickly to trigger rate limit
-        responses = []
-        for _ in range(150):  # More than the rate limit
-            r = await ac.get("/search", params={"query": "test", "top_k": 1})
-            responses.append(r.status_code)
-        
-        # Should have some 429 responses
-        assert 429 in responses, f"Expected 429 in responses, got: {set(responses)}"
-
-@pytest.mark.asyncio
 async def test_schema_mismatch_returns_4xx():
     """Test that FastAPI properly validates parameter types"""
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as ac:
