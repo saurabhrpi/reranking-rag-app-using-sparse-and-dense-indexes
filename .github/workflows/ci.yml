@@ -23,6 +23,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest httpx
+          pip install pytest-asyncio
 
       - name: Run integration tests
         env:
