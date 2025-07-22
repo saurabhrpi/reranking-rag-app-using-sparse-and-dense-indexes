@@ -13,7 +13,7 @@ MILVUS_TOKEN = os.getenv("MILVUS_TOKEN", "268c3796886a41827afcee6560f083fbfc4992
 MILVUS_COLLECTION_SPARSE = os.getenv("MILVUS_COLLECTION_SPARSE", "githubSparseVectorRag")
 MILVUS_COLLECTION_DENSE = os.getenv("MILVUS_COLLECTION_DENSE", "githubDenseVectorRag")
 
-
+ 
 # Milvus client setup (assume you have this)
 from pymilvus import MilvusClient
 milvus_client = MilvusClient(
