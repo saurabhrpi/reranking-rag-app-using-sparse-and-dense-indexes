@@ -1,0 +1,5 @@
+Check why "cdef class" search is not returning any results.
+Move sparse and dense indexes to same collection.
+More functional and security Test cases. For e.g. one for rate limiter, one for "forget previous instructions.." type of prompts, etc. 
+Make existing functional and security test cases better.
+
